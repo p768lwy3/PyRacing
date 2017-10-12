@@ -66,3 +66,67 @@ def getInfo(horseno):
     df = df.set_index([0])
 
     return df
+
+
+def getPastdata(HorseNo, StartDate=datetime(1999,1,1), EndDate=datetime.now()):
+  url = 'http://www.hkjc.com/english/racing/horse.asp?HorseNo={0}&Option=1#htop'.format(HorseNo)
+  list_req = requests.get(url, headers=headers)
+  if(list_req.status_code == requests.codes.ok):
+    soup = BeautifulSoup(list_req.content, HTML_PARSER)
+    l=[]
+    if(soup.find('table',attrs={'class':'bigborder'}) is not None):
+      for rawdatasets in soup.find('table', attrs = {'class':'bigborder'}).find_all('tr', 
+        attrs={'bgcolor':['#F3F1E6','#E3E1D7','#EBEEF5','#DBDEE5','#F8F4EF','#E7E4DF']}):
+        for rawdata in rawdatasets.find_all('td'):
+          l.append(str(rawdata.text.strip()))
+          l = [x for x in l if x != '']
+      for k in range(18, len(l), 18):
+        try:
+          if(l[k].startswith('-')):
+            del l[k]
+        except:
+          pass
+      l = (np.asarray(l)).reshape(len(l)//18,18)
+      df = pd.DataFrame({'Race Index':l[:,0],'Pla.':l[:,1],'Date':l[:,2],'RC/Track/Course':l[:,3],'Dist.':l[:,4],'G':l[:,5],
+           'Race Class':l[:,6],'Dr':l[:,7],'Rtg.':l[:,8],'Trainer':l[:,9],'Jockey':l[:,10],'LBW':l[:,11],'Win Odds':l[:,12],
+           'Act. Wt.':l[:,13],'Running Position':l[:,14],'Finish Time':l[:,15],'Declar. Horse Wt.':l[:,16],'Gear':l[:,17]})
+      """Clear the data, Make the dtypes correct
+         How should I replace the '--' in different column? Also, how should I convert the string to number? And, how to deal with Track and 
+         SiteConditions? <- This should be converting to dummy variable. Is it better to split the equipment to boolean variable? <- This should 
+         be done easily."""
+      for i in range(len(df['Race Index'])):
+        if not df.loc[i, 'Race Index'].isdigit():
+          df.loc[i, 'Race Index'] = 999
+      for i in range(len(df['Running Position'])):
+        df.loc[i,'Running Position'] = '-'.join([j for j in df.loc[i, 'Running Position'] if j.isdigit()])
+      df['Finish Time'] = df['Finish Time'].replace('--','0:00:00')
+      for i in range(len(df['Finish Time'])):
+        df.loc[i,'Finish Time'] = df.loc[i, 'Finish Time'].replace('.',':')
+      df['Finish Time'] = pd.to_datetime(df['Finish Time'], format='%M:%S:%f')
+      df['Date'] = pd.to_datetime(df['Date'], format='%d/%m/%y')
+      for i in range(len(df['Date'])):
+        df.loc[i, 'Date'] = df.loc[i, 'Date'].date()
+      df = df.join(df['RC/Track/Course'].str.split('/',expand=True).rename(columns={0:'RC', 1:'Track',2:'Course'}))
+      df = df.drop('RC/Track/Course', axis=1)
+      for i in ['RC','Track','Course']:
+        for j in range(0,len(df['RC'])):
+          try:
+            df.loc[j,i] = df.loc[j,i].replace('"','').strip()
+          except:
+            pass
+        df[i] = df[i].fillna(value='-')	
+      df['Declar. Horse Wt.'] = df['Declar. Horse Wt.'].replace('--','0'); df['Dr'] = df['Dr'].replace('--','99')
+      df['Win Odds'] = df['Win Odds'].replace('---','0'); df['Rtg.'] = df['Rtg.'].replace('--','999')
+      for i in ['Race Index','Pla.','Dist.','Declar. Horse Wt.','Rtg.','Dr','Act. Wt.']:
+        for j in range(0,len(df[i])):
+          try:
+            df.loc[j,i] = df.loc[j,i].astype('int64')
+          except:
+            pass
+      ## Here are some problems so the dtypes cannot be converted...
+      df['Win Odds'] = df['Win Odds'].astype('float64')
+      for i in ['Race Class', 'Jockey', 'Trainer']:
+        df[i] = df[i].map(str).map(str.strip).astype('str')
+      return df[(df['Date']>StartDate)&(df['Date']<EndDate)] # (df['Rist.'].isin(['1200', '1650'])) etc.
+    else:
+      print('  There is no racing record of the horse in {0}'.format(url))
