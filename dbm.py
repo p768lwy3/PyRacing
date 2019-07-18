@@ -11,6 +11,16 @@ import time
 html_parser = "html.parser"
 index_url = 'https://racing.hkjc.com/racing/information/English/Horse/SelectHorseByChar.aspx?ordertype={0}'
 horse_url = "https://racing.hkjc.com/racing/information/english/Horse/Horse.aspx?HorseId={0}&Option=1"
+#retired_url = "https://racing.hkjc.com/racing/information/English/Horse/OtherHorse.aspx?HorseId={0}"
+race_url = 'https://racing.hkjc.com/racing/information/English/Racing/LocalResults.aspx?RaceDate={0}'
+
+def is_float(x):
+    try:
+        float(x)
+        return True
+    except ValueError:
+        return False
+
 class database(object):
     def __init__(self):
         self.host = "localhost"
@@ -25,6 +35,30 @@ class database(object):
         self.cur = self.con.cursor()
         return
    
+    def raceupdate(self):
+        opts = Options()
+        opts.set_headless()
+        assert opts.set_headless
+        browser = Chrome(options=opts)
+        browser.get('https://racing.hkjc.com/racing/information/English/Racing/LocalResults.aspx')
+        time.sleep(2)
+
+        date_sat = datetime.datetime(2013, 9, 7)
+        date_sun = datetime.datetime(2013, 9, 8)
+        date_wed = datetime.datetime(2013, 9,11)
+        while date_wed.year < 2017:
+            string_wed = date_wed.strftime("%Y/%m/%d")
+            string_sat = date_sat.strftime("%Y/%m/%d")
+            string_sun = date_sun.strftime("%Y/%m/%d")
+            self.__search_dates__(browser,string_sat)
+            self.__search_dates__(browser,string_sun)
+            self.__search_dates__(browser,string_wed)
+            date_wed += datetime.timedelta(7)
+            date_sat += datetime.timedelta(7)
+            date_sun += datetime.timedelta(7)
+        return
+
+    """
     def horseupdate(self):
         opts = Options()
         opts.set_headless()
@@ -44,157 +78,130 @@ class database(object):
                 browser.get(horse_url.format(horse_no))
                 self.__updatehorseinfo__(browser.page_source,horse_no)
                 self.__updatepastrecord__(browser.page_source,horse_no)
+     """
 
-    def gameupdate(self):
-        """
-        url = 'http://racing.hkjc.com/racing/info/meeting/Results/English/{0}/'
-        req = requests.get(url.format('Local/20180506/ST'), headers = headers)
-        if req.status_code == requests.codes.ok:
-            url_list = []
-            soup = BeautifulSoup(req.content, html_parser)
-            select = soup.find('select', {"id": "raceDateSelect", "name": "raceDateSelect"})
-            for option in select.find_all("option"):
-                if "value" in option.attrs:
-                    if not "Simulcast" in option["value"]:
-                        url_list.append(url.format(option["value"]))
-            print(url_list)
-        """
-        date_wed = datetime.datetime(2018, 5, 2)
-        date_sat = datetime.datetime(2018, 5, 5)
-        date_sun = datetime.datetime(2018, 5, 6)
-        while date_wed.year != 2017:
-            string_wed = date_wed.strftime("%Y%m%d")
-            string_sat = date_sat.strftime("%Y%m%d")
-            string_sun = date_sun.strftime("%Y%m%d")
-            url_list = []
-            url_list = self.__findgame__(string_wed)
-            """
-            for i in range(3):
-                try:
-                    url_list = self.__findgame__(string_wed)
-                    break
-                except:
-                    print('Cannot find {0}'.format(string_wed))
-            for url in url_list:
-                try:
-                    self.__crawlgame__(url)
-                    break
-                except:
-                    pass
-            for i in range(3):
-                try:
-                    url_list = self.__findgame__(string_sat)
-                    break
-                except:
-                    print('Cannot find {0}'.format(string_sat))
-            for url in url_list:
-                try:
-                    self.__crawlgame__(url)
-                    break
-                except:
-                    pass
-            for i in range(3):
-                try:
-                    url_list = self.__findgame__(string_sun)
-                    break
-                except:
-                    print('Cannot find {0}'.format(string_sun))
-            for url in url_list:
-                try:
-                    self.__crawlgame__(url)
-                    break
-                except:
-                    pass
-            """
-            date_wed -= datetime.timedelta(7)
-            date_sat -= datetime.timedelta(7)
-            date_sun -= datetime.timedelta(7)
+    def fill_missing_horses(self,browser,horseid):
+        self.cur.execute(
+            'select horseid from horseinfo where ' \
+            'horseid = \'{0}\''.format(horseid))
+        if self.cur.fetchone() is None:
+            print('> update horse: {0}...'.format(horseid))           
+            browser.get(horse_url.format(horseid))
+            retired = re.search('OtherHorse',browser.current_url)
+            self.__updatehorseinfo__(retired,browser.page_source,horseid)
+            self.__updatepastrecord__(browser.page_source,horseid)
 
-        return
+    def __search_dates__(self,browser,date):
+        print("> finding races for {0}".format(date))
+        (place,url_list) = self.__findraces__(browser,date)
+        if url_list:
+            horses_in_race = self.__crawlrace__(browser,date,place,url_list)
+            for horseid in horses_in_race:
+                self.fill_missing_horses(browser,horseid)
+        else:
+            print(" No races found for {0}".format(date))
     
-    def __findgame__(self, date):
-        url = "http://racing.hkjc.com/racing/info/meeting/Results/English/Local/{0}/"
-        req = requests.get(url.format(date), headers = headers)
-        if req.status_code == requests.codes.ok:
-            soup = BeautifulSoup(req.content, html_parser)
-            url_list = []
-            # get the place of race
-            race = soup.find('td', {"class": "tdAlignL number13 color_black"}).text
-            race = ' '.join(race.split()[-2:])
-            if race == "Sha Tin":
-                place = "ST"
-            elif race == "Happy Valley":
-                place = "HV"
+    def __findraces__(self, browser, date):
+        browser.get(race_url.format(date))
+        soup = BeautifulSoup(browser.page_source, html_parser)
+        url_list = []
+        # get the place of race
+        race = soup.find("span", class_ = "f_fl f_fs13")
+        if race is None:
+            return("",url_list)
+        race = race.text
+        race = ' '.join(race.split()[-2:])
+        if race == "Sha Tin":
+            place = "ST"
+        elif race == "Happy Valley":
+            place = "HV"
+        else:
+            place = race[0:2].upper()
+        # get the number of races:
+        races = soup.find('table', class_ = "f_fs12 f_fr js_racecard")
+        races = races.find_all('td')
+        no = 0
+        for i in range((len(races)-2)):
+            url_list.append(race_url.format(date) + '&Racecourse={0}&RaceNo={1}'.format(place, (i + 1)))
+        return (place,url_list)
             
-            # get the number of games:
-            games = soup.find('tr', {"valign": "middle", "bgcolor": "#ffffff"})
-            games = games.find_all('td', {"nowrap": "nowrap", "style": "text-align:center;"})
-            no = 0
-            for g in games:
-                no += 1
-            for i in range(no):
-                url_list.append(url.format(date) + '{0}/{1}'.format(place, (no + 1)))
-            
-            return url_list
-                
-    def __crawlgame__(self, url):
-        req = requests.get(url, headers = headers)
-        if req.status_code == requests.codes.ok:
-            soup = BeautifulSoup(req.content, html_parser)
-            gameid = soup.find('div', {'class': "boldFont14 color_white trBgBlue"}).text
-            gameid = gameid.split('(')[1].replace(')', '')
-            date = url.split('/')[-3]
-            gameid += '_' + date[-2:] + date[-4:-2] + date[-6:-4]
-            # game information
-            table = soup.find("table", {"class": "tableBorder0 font13"})
+    def __crawlrace__(self, browser,date,place,url_list):
+        racedate = date
+        print("> got races for {0} on {1}".format(place, date))
+        date = date.split('/')
+        horses_in_race = []
+        for race_url in url_list:
+            try:
+                browser.get(race_url)
+            except:
+                print("Error retrieving {0}".format(race_url))
+                continue
+
+            soup = BeautifulSoup(browser.page_source, html_parser)
+            try:
+                raceid = soup.find('tr', class_ = "bg_blue color_w font_wb").text
+            except: 
+                print("Error getting raceid")
+                continue
+
+            raceid = raceid.split('(')[1].replace(')', '').rstrip().zfill(3)
+            raceid += '_' + date[2] + date[1] + date[0][2:4]
+            print("Parsing raceid: {0}".format(raceid))
+            # race information
+            table = soup.find("tbody", class_ = "f_fs13")
             results = []
             for row in table.find_all('td'):
-                results.append(row.text)
-                if not row.find('span') is None:
-                    results.append(row.find('span').text)
+                if row.text != "":
+                    results.append(row.text)
+                    if not row.find('span') is None:
+                        results.append(row.find('span').text)
             df = pd.DataFrame(results)
-            df.drop(17, 0, inplace = True)
-            
-            class_ = str(df.iloc[0, 0]).split()[1]
-            dist_ = re.search('(\w+)M', str(df.iloc[1, 0])).group(1)
-            dist_ = int(dist_)
-            going_ = str(df.iloc[3, 0])
-            course_ = str(df.iloc[6, 0]).split()
-            coursetype = course_[0]
-            course_ = course_[2].replace('"', '')
-            bonus_ = str(df.iloc[7, 0]).split()[1].replace(',', '')
+            #with pd.option_context('display.max_rows', None, 'display.max_columns', None):
+            #    print(df)
+
+            class_ = str(df.iloc[0, 0]).split(" - ")[0]
+            dist_ = re.search('(\w+)M', str(df.iloc[0, 0])).string.split(" - ")[1]
+            dist_ = int(dist_.replace('M', ''))
+            going_ = str(df.iloc[2, 0])
+            course_ = str(df.iloc[5, 0]).split(" - ")
+            track = course_[0]
             try:
-                bonus_ = int(bonus_)
+                course_ = course_[1].replace('"', '')
             except:
-                bonus_ = 0
-            
-            query = 'INSERT INTO GameInfo (RaceID, RaceClass, Dist, Going, CourseType, '\
-                'Course, Bouns) VALUES ("{0}", "{1}", {2}, "{3}", "{4}", "{5}", {6});'.format(
-                gameid, class_, dist_, going_, coursetype, course_, bonus_)
-            
+                course_ = 'Null'
+        
+            query = 'INSERT INTO raceInfo (RaceID, RaceClass, RaceDate, Venue, Track, Course, Going, '\
+                'Dist) VALUES (\'{0}\', \'{1}\', \'{2}\', \'{3}\', \'{4}\', \'{5}\',\'{6}\', {7}) '\
+                'ON CONFLICT ON CONSTRAINT raceinfo_pkey DO NOTHING'.format(
+                raceid, class_, racedate, place, track, course_, going_, dist_)
+            self.cur.execute(query)
+            self.con.commit()    
+            #print(query)
+
             # race record
+            race_results = soup.find('div', class_ = "performance")
             col = []
-            col_names = soup.find('tr', {"class": 
-                "tdAlignVT trBgBlue1 fontStyle color_white LBFont14 "})
+            col_names = race_results.find('tr', class_ = "bg_blue color_w")
             for col_name in col_names.find_all('td'):
-                col.append(col_name.text)
+                col.append(col_name.text.replace('.', "").replace(' ', ""))
             col = [c.replace('\r', '').replace('\n', '').replace('\t', '').replace(':', "").strip() for c in col]
             records = []
             record = []
-            table = soup.find("table", {"class": 
-                "tableBorder trBgBlue tdAlignC number12 draggable"})
-            for row in table.find_all("tr", {"class": ['trBgGrey','trBgWhite']}):
+            table = race_results.find("tbody", class_ = "f_fs12")
+            
+            for row in table.find_all("tr"):
                 for cell in row.find_all('td'):
                     if not cell.find('a') is None:
-                        r = cell.find('a').text
-                        if not cell is None:
-                            r = r + cell.text
-                        record.append(r)
+                        r = cell.a['href'][-12:]
+                        if re.search("HK_20[0-2][0-9]_\w{4}", r):
+                            record.append(r)
+                        else:
+                            record.append(cell.text.strip())
                     elif not cell is None:
-                        record.append(cell.text)
+                        record.append(cell.text.strip())
                 records.append(record)
                 record = []
-            records = pd.DataFrame(records)
+            records = pd.DataFrame(records)            
             length = len(records.columns)
             counter = 1
             for j in range(10, length - 2):
@@ -202,40 +209,57 @@ class database(object):
                 col.insert(j, col_name)
                 counter += 1
             records.columns = col
-            records['HorseNo'] = pd.Series([re.search('\((.*?)\)', str(value)).group(1)
-                for value in records['Horse']])
-            records.drop('Horse', axis = 1, inplace = True)
+            
+            # If there is a void race, Win Odds (And running position) aren't list in the table
+            if not 'WinOdds' in records.columns:
+                continue
             records.Jockey = records.Jockey.map(lambda x: 
                 x[:len(x)//2] if x[len(x)//2:] in x[:len(x)//2] else x)
+            records.Jockey = records.Jockey.map(lambda x:
+                x.replace('\'','\'\''))         
             records.Trainer = records.Trainer.map(lambda x: 
-                x[:len(x)//2] if x[len(x)//2:] in x[:len(x)//2] else x)               
-            print(records)
-            for idx, row in records.iterrows():
-                query = 'INSERT INTO GameRecord (RaceID, HorseID, Pla, HorseNo, Jockey, '\
-                    'Trainer, ActWt, DeclarHorseWt, Dr, LBW, FinishTime, WinOdds) VALUES '\
-                    '({0}, {1}, {2}, {3}, {4}, {5}, {6}, {7}, {8}, {9}, {10}, {11});'.format(
-                        gameid, row['HorseNo'], row['Plc.'], row['Horse No.'], 
-                        row['Jockey'], row['Trainer'], row['ActualWt.'], 
-                        row['Declar.Horse Wt.'], row['Draw'], row['LBW'],
-                        row['Finish Time'], row['Win Odds'])
-                print(query)
-                    
-                
+                x[:len(x)//2] if x[len(x)//2:] in x[:len(x)//2] else x)     
+            records.Trainer = records.Trainer.map(lambda x:
+                x.replace('\'','\'\''))         
+            records.Plc = records.Plc.map(lambda x: 'Null' if not x.isdigit() else x)
+            records.HorseNo = records.HorseNo.map(lambda x: 'Null' if not x.isdigit() else x)
+            records.DeclarHorseWt = records.DeclarHorseWt.map(lambda x: 
+                'Null' if not x.isdigit() else x)
+            records.Draw = records.Draw.map(lambda x: 'Null' if not x.isdigit() else x)
 
-    def __updatehorseinfo__(self, page, horse_no):
+            records.WinOdds = records.WinOdds.map(lambda x: float(x) 
+                if is_float(x) else 'Null')
+            
+            horses_in_race += records.Horse.tolist()
+            #print(records)
+            for idx, row in records.iterrows():
+                query = 'INSERT INTO RaceResults (RaceID, HorseID, Pla, HorseNo, '\
+                    'Draw, LBW, FinishTime, WinOdds) VALUES '\
+                    '(\'{0}\', \'{1}\', {2}, {3}, {4}, \'{5}\', \'{6}\', {7}) '\
+                    'ON CONFLICT ON CONSTRAINT raceresults_pkey DO NOTHING'.format(
+                        raceid, row['Horse'], row['Plc'], row['HorseNo'], 
+                        row['Draw'], row['LBW'], row['FinishTime'], row['WinOdds'])
+                #print(query)
+                self.cur.execute(query)
+                self.con.commit()
+        return(horses_in_race)
+            
+
+    def __updatehorseinfo__(self, retired, page, horse_no):
         info = {}
         soup = BeautifulSoup(page, html_parser)
         #print(soup.prettify())
         title = soup.find('td', class_ = "subsubheader").get_text().strip()
+        print('Got '+title)
         if len(title) > 6:
-            #print('Got '+title)
             title = str(title).rsplit(" ",1)
-            name = title[0].strip().replace('\'','\'\'')
-            number = title[1].replace('(', '').replace(')', '').replace('\'','\'\'')
+            if title[1] == "(Retired)":
+               name = title[0].rsplit(" ",1)[0].strip().replace('\'','\'\'')
+            else:
+               name = title[0].strip().replace('\'','\'\'')
         else:
             name = None
-            number = str(title).replace('(', '').replace(')', '').strip()
-        #table = soup.find_all('table')[7] # here should find a better way to search?
+        
         table = soup.find('table', class_ = "table_eng_text")
         l = []
         for i, td in enumerate(table.find_all('td')):
@@ -256,33 +280,10 @@ class database(object):
                         '\n', '').replace('\t', '').replace(':', '').replace('\'','\'\'').strip()
             except:
                 pass
-        #print(l)
-        country = l[1][0]
-        age = int(l[1][1])
-        color = l[3][0]
-        sex = l[3][1]
-        importtype = l[5]
-        
-        try:
-            seasonstakes = int(''.join([d for d in l[7] if d.isdigit()]))
-        except:
-            seasonstakes = 0
-        
-        try:
-            totalstakes = int(''.join([d for d in l[9] if d.isdigit()]))
-        except:
-            totalstakes = 0
-        
-        starts123 = re.findall(r'\d+', l[11])
-        starts123 = '-'.join(starts123)
-        
-        try:
-            startspast10 = int(''.join([d for d in l[13] if d.isdigit()]))
-        except:
-            startspast10 = 0
         
         table = soup.find_all('table', class_ = "table_eng_text")[1]
         l2 = []
+        
         for i, td in enumerate(table.find_all('td')):
             d = str(td.text.strip())
             if (i-1) % 3 != 0:
@@ -295,35 +296,61 @@ class database(object):
             except:
                 pass
         
+        #print(l)
         #print(l2)
-        trainer = l2[1]
+        
+        country = l[1][0]
+        if retired:
+            age = 'Null'
+            seasonstakes = 0
+            totalstakes = int(''.join([d for d in l[9] if d.isdigit()]))
+            starts123 = re.findall(r'\d+', l[9])
+            starts123 = '-'.join(starts123)
+            startspast10 = 0
+            currentrating = 0
+            startrating = 0
+            sire = l2[5]
+            dam = l2[7]
+            damssire = l2[9]
+        else:
+            age = int(l[1][1])
+            seasonstakes = int(''.join([d for d in l[7] if d.isdigit()]))
+            totalstakes = 0
+            starts123 = re.findall(r'\d+', l[11])
+            starts123 = '-'.join(starts123)
+            startspast10 = int(''.join([d for d in l[13] if d.isdigit()]))
+            try:
+                currentrating = int(''.join([d for d in l2[5] if d.isdigit()]))
+            except:
+                currentrating = 0
+            try:
+                startrating = int(''.join([d for d in l2[7] if d.isdigit()]))
+            except: 
+                startrating = 0
+            sire = l2[9]
+            dam = l2[11]
+            damssire = l2[13]
+
+        color = l[3][0]
+        sex = l[3][1]
+        importtype = l[5]
+        
         owner = l2[3].split(',')[0]
         owner = owner[0:63]
         
-        try:
-            currentrating = int(''.join([d for d in l2[5] if d.isdigit()]))
-        except:
-            currentrating = 0
         
-        try:
-            startrating = int(''.join([d for d in l2[7] if d.isdigit()]))
-        except:
-            startrating = 0
-        sire = l2[9]
-        dam = l2[11]
-        damssire = l2[13]
-        
+        # Change this to update the fields that would vary on conflict instead of ignore
         query = 'INSERT INTO HorseInfo (HorseID, Name, Country, Age, Color, '\
-                'Sex, ImportType, SeasonStakes, TotalStakes, First3Starts, '\
-                'StartsPast10, Trainer, Owner, CurrentRating, StartRating, '\
+                'Sex, ImportType, SeasonStakes, TotalStakes, Starts123, '\
+                'StartsPast10, Owner, CurrentRating, StartRating, '\
                 'Sire, Dam, DamSire) VALUES (\'{0}\', \'{1}\', \'{2}\', {3}, '\
-                '\'{4}\', \'{5}\', \'{6}\', {7}, {8}, \'{9}\', {10}, \'{11}\', \'{12}\', {13}, '\
-                '{14}, \'{15}\', \'{16}\', \'{17}\')'\
+                '\'{4}\', \'{5}\', \'{6}\', {7}, {8}, \'{9}\', {10}, \'{11}\', {12}, {13}, '\
+                '\'{14}\', \'{15}\', \'{16}\')'\
                 'ON CONFLICT ON CONSTRAINT horseinfo_pkey DO NOTHING'.format(
-                  number, name, country, age, color, sex, importtype, seasonstakes,
-                  totalstakes, starts123, startspast10, trainer, owner, currentrating, 
+                #update age, stakes, start*, trainer, owner, ratings
+                  horse_no, name, country, age, color, sex, importtype, seasonstakes,
+                  totalstakes, starts123, startspast10, owner, currentrating, 
                   startrating, sire, dam, damssire)
-                #'ON DUPLICATE KEY UPDATE HorseID = VALUES(HorseID);
         #print(query)
         self.cur.execute(query)
         self.con.commit()
@@ -360,45 +387,29 @@ class database(object):
             df = df[df.RaceIndex != "999"] # remove oversea or etc.
             df.RunningPosition = df.RunningPosition.map(lambda x:
                 '-'.join(re.findall(r'\d+', x)))
-            df.FinishTime = df.FinishTime.replace('--', '0.00.00')
-            # df.FinishTime = df.FinishTime.str.replace('.', ':')
-            # df.FinishTime = pd.to_datetime(df.FinishTime, format = '%M.%S.%f')
-            # df.Date = pd.to_datetime(df.Date, format = '%d/%m/%y')
-            # df.Date = df.Date.date()
-            df = df.join(df['RC/Track/Course'].str.split('/', expand = True).rename(
-                columns = {0: 'RC', 1: 'Track', 2: 'Course'}))
-            if not 'Course' in df.columns:
-                df['Course'] = '-'
-            df.Course = df.Course.map(lambda x: "-" if x is None else x)
-            for col in ['RC', 'Track', 'Course']:
-                df[col] = df[col].map(lambda x: x.replace('"', '').strip())
-                df[col] = df[col].fillna('-')
-            for col in ['Pla', 'Dr']:
-                df[col] = df[col].map(lambda x: '99' if not x.isdigit() else x)
-            for col in ['ActWt', 'DeclarHorseWt', 'WinOdds']:
-                df[col] = df[col].map(lambda x: '0' if not x.isdigit() else x)
+            
+            for col in ['ActWt', 'DeclarHorseWt']:
+                df[col] = df[col].map(lambda x: 'Null' if not x.isdigit() else x)
             df.Rtg = df.Rtg.map(lambda x: '999' if not x.isdigit() else x)
+            df.Date = df.Date.map(lambda x: x.replace('/', ''))
             df['RaceNo'] = df.apply(lambda x:
-                x.RaceIndex + '_' + x.Date.replace('/', ''), axis = 1)
-            df.Date = df.Date.map(lambda x: '20' + x[6:] + '-' + x[3:5] + '-' + x[0:2])
-            for col in ['RaceIndex', 'Pla', 'Dist', 'DeclarHorseWt', 'Rtg', 
-                'Dr', 'ActWt']:
-                df[col] = df[col].astype('int64')
-            df.WinOdds = df.WinOdds.astype('float64')
+                x.RaceIndex + '_' + x.Date[0:2] + x.Date[2:4] + x.Date[-2:], axis = 1)
+            #for col in ['DeclarHorseWt', 'Rtg', 'ActWt']:
+            #    df[col] = df[col].astype('int64')
             for col in ['RaceClass', 'Jockey', 'Trainer']:
                 df[col] = df[col].map(str).map(str.strip).astype('str')
             df.Trainer = df.Trainer.map(lambda x: x.replace('\'', '\'\''))
+            df.Jockey = df.Jockey.map(lambda x: x.replace('\'', '\'\''))
             
+ 
             for idx, r in df.iterrows():
-                query = 'INSERT INTO PastRecord (RaceID, HorseID, RaceIndex, Pla, RaceDate, '\
-                'RC, Track, Course, Dist, G, RaceClass, Dr, Rtg, Trainer, Jockey, LBW, WinOdds, '\
-                'ActWt, RunningPosition, FinishTime, DeclarHorseWt, Gear) VALUES (\'{0}\', \'{1}\', '\
-                '{2}, {3}, \'{4}\', \'{5}\', \'{6}\', \'{7}\', {8}, \'{9}\', \'{10}\', {11}, {12}, \'{13}\', '\
-                '\'{14}\', \'{15}\', {16}, {17}, \'{18}\', \'{19}\', {20}, \'{21}\') '\
+                query = 'INSERT INTO PastRecord (RaceID, HorseID, '\
+                'Rtg, Trainer, Jockey, ActWt, RunningPosition, DeclarHorseWt, Gear) VALUES ('\
+                '\'{0}\', \'{1}\', {2}, \'{3}\', \'{4}\', {5}, \'{6}\', {7}, \'{8}\') '\
                 'ON CONFLICT ON CONSTRAINT pastrecord_pkey DO NOTHING'.format(
-                    r.RaceNo, r.HorseNo, r.RaceIndex, r.Pla, r.Date, r.RC, r.Track, r.Course, r.Dist, 
-                    r.G, r.RaceClass, r.Dr, r.Rtg, r.Trainer, r.Jockey, r.LBW, r.WinOdds, r.ActWt, 
-                    r.RunningPosition, r.FinishTime, r.DeclarHorseWt, r.Gear)
+                    r.RaceNo, r.HorseNo, r.Rtg, r.Trainer, r.Jockey, r.ActWt, 
+                    r.RunningPosition, r.DeclarHorseWt, r.Gear)
+                #print(query)
                 self.cur.execute(query)
             self.con.commit()
         else:
