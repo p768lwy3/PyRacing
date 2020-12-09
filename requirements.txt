@@ -1,0 +1,7 @@
+DateTime~=4.3
+numpy~=1.19.3
+pandas~=1.1.5
+PyMySQL~=0.10.1
+requests~=2.25.0
+beautifulsoup4~=4.9.3
+selenium~=3.141.0
